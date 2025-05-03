@@ -1,0 +1,25 @@
+{
+  "name": "search",
+  "version": "1.0.0",
+  "description": "search service for knowledge garden",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@elastic/elasticsearch": "^8.10.0",
+    "consul": "^1.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "kafkajs": "^2.2.4",
+    "mongoose": "^7.5.0",
+    "nodemon": "^3.1.9",
+    "pg": "^8.14.1"
+  }
+}

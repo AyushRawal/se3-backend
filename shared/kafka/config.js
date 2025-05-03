@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import KafkaJS from 'kafkajs';
 dotenv.config();
 
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS?.split(',') || ['localhost:9092'];
@@ -36,6 +37,7 @@ export const getConsumerConfig = (groupId, fromBeginning = false) => ({
 
 // Common producer configuration
 export const PRODUCER_CONFIG = {
+  createPartitioner: KafkaJS.Partitioners.DefaultPartitioner,
   allowAutoTopicCreation: true,
   idempotent: true,
   retry: {

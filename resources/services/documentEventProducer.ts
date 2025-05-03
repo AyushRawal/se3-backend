@@ -1,5 +1,6 @@
-import { Kafka, Producer } from 'kafkajs';
-import { IResource } from '../models/Resource';
+import KafkaJS from "kafkajs";
+const { Kafka, Producer } = KafkaJS;
+import type { IResource } from '../models/Resource.ts';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,7 +11,7 @@ let producer: Producer | null = null;
 // Kafka configuration
 const kafka = new Kafka({
   clientId: 'resource-service',
-  brokers: [process.env.KAFKA_BROKER as string],
+  brokers: [process.env.KAFKA_BROKERS as string],
 });
 
 /**
@@ -19,7 +20,9 @@ const kafka = new Kafka({
  */
 export const getProducer = async (): Promise<Producer> => {
   if (!producer) {
-    producer = kafka.producer();
+    producer = kafka.producer({
+      createPartitioner: KafkaJS.Partitioners.DefaultPartitioner
+    });
     await producer.connect();
     console.log('Connected to Kafka for document event production');
   }
@@ -33,7 +36,7 @@ export const getProducer = async (): Promise<Producer> => {
 export const publishDocumentCreated = async (document: IResource): Promise<boolean> => {
   try {
     const kafkaProducer = await getProducer();
-    
+
     const payload = {
       id: document._id.toString(),
       document: {
@@ -57,13 +60,13 @@ export const publishDocumentCreated = async (document: IResource): Promise<boole
     await kafkaProducer.send({
       topic: process.env.DOCUMENT_TOPIC || 'document.created',
       messages: [
-        { 
+        {
           value: JSON.stringify(payload),
           key: document._id.toString()
         }
       ]
     });
-    
+
     console.log(`Document created event published for document ID: ${document._id}`);
     return true;
   } catch (error) {
@@ -80,7 +83,7 @@ export const publishDocumentCreated = async (document: IResource): Promise<boole
 export const publishDocumentUpdated = async (documentId: string, updates: Partial<IResource>): Promise<boolean> => {
   try {
     const kafkaProducer = await getProducer();
-    
+
     const payload = {
       id: documentId,
       updates,
@@ -90,13 +93,13 @@ export const publishDocumentUpdated = async (documentId: string, updates: Partia
     await kafkaProducer.send({
       topic: process.env.DOCUMENT_UPDATED_TOPIC || 'document.updated',
       messages: [
-        { 
+        {
           value: JSON.stringify(payload),
           key: documentId
         }
       ]
     });
-    
+
     console.log(`Document updated event published for document ID: ${documentId}`);
     return true;
   } catch (error) {
@@ -112,7 +115,7 @@ export const publishDocumentUpdated = async (documentId: string, updates: Partia
 export const publishDocumentDeleted = async (documentId: string): Promise<boolean> => {
   try {
     const kafkaProducer = await getProducer();
-    
+
     const payload = {
       id: documentId,
       timestamp: new Date().toISOString()
@@ -121,13 +124,13 @@ export const publishDocumentDeleted = async (documentId: string): Promise<boolea
     await kafkaProducer.send({
       topic: process.env.DOCUMENT_DELETED_TOPIC || 'document.deleted',
       messages: [
-        { 
+        {
           value: JSON.stringify(payload),
           key: documentId
         }
       ]
     });
-    
+
     console.log(`Document deleted event published for document ID: ${documentId}`);
     return true;
   } catch (error) {

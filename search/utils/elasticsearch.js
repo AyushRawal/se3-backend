@@ -43,7 +43,7 @@ export const setupElasticsearch = () => {
 export const initializeIndices = async (esClient) => {
   try {
     const indexExists = await esClient.indices.exists({ index: INDEX_NAME });
-    
+
     if (!indexExists) {
       await esClient.indices.create({
         index: INDEX_NAME,
@@ -71,7 +71,7 @@ export const initializeIndices = async (esClient) => {
           },
           mappings: {
             properties: {
-              title: { 
+              title: {
                 type: 'text',
                 analyzer: 'custom_analyzer',
                 fields: {
@@ -80,7 +80,7 @@ export const initializeIndices = async (esClient) => {
                   }
                 }
               },
-              description: { 
+              description: {
                 type: 'text',
                 analyzer: 'custom_analyzer'
               },
@@ -88,13 +88,13 @@ export const initializeIndices = async (esClient) => {
                 type: 'text',
                 analyzer: 'custom_analyzer'
               },
-              resourceType: { 
+              resourceType: {
                 type: 'keyword'
               },
-              tags: { 
+              tags: {
                 type: 'keyword'
               },
-              categories: { 
+              categories: {
                 type: 'keyword'
               },
               owner_id: {
@@ -127,7 +127,7 @@ export const initializeIndices = async (esClient) => {
       });
       console.log(`Created Elasticsearch index: ${INDEX_NAME}`);
     }
-    
+
     return true;
   } catch (error) {
     console.error(`Elasticsearch initialization error: ${error.message}`);
@@ -160,13 +160,13 @@ export const indexDocument = async (document, esClient) => {
         updated_at: document.updated_at
       }
     });
-    
+
     // Mark document as indexed in MongoDB
     await Document.findByIdAndUpdate(
       document._id,
       { is_indexed: true }
     );
-    
+
     return true;
   } catch (error) {
     console.error(`Error indexing document: ${error.message}`);
@@ -180,7 +180,7 @@ export const indexDocument = async (document, esClient) => {
 export const fullTextSearch = async (searchText, filters = {}, options = {}, esClient) => {
   try {
     const { size = 10, from = 0 } = options;
-    
+
     // Build query
     const should = [
       {
@@ -201,16 +201,16 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
         }
       }
     ];
-    
+
     // Build filters
     const must = [];
     const filterClauses = [];
-    
+
     // Always filter for public documents unless explicitly specified
     if (!filters.hasOwnProperty('is_public')) {
       filterClauses.push({ term: { is_public: true } });
     }
-    
+
     // Add other filters
     for (const [key, value] of Object.entries(filters)) {
       if (Array.isArray(value)) {
@@ -219,7 +219,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
         filterClauses.push({ term: { [key]: value } });
       }
     }
-    
+
     const query = {
       bool: {
         should,
@@ -227,7 +227,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
         minimum_should_match: 1
       }
     };
-    
+
     // Highlighting configuration
     const highlight = {
       fields: {
@@ -238,7 +238,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
       pre_tags: ['<strong>'],
       post_tags: ['</strong>']
     };
-    
+
     // Aggregations for faceted search
     const aggregations = {
       resource_types: {
@@ -254,7 +254,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
         avg: { field: 'average_rating' }
       }
     };
-    
+
     const response = await esClient.search({
       index: INDEX_NAME,
       body: {
@@ -265,7 +265,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
         from
       }
     });
-    
+
     return {
       total: response.hits.total.value,
       hits: response.hits.hits.map(hit => ({
@@ -288,7 +288,7 @@ export const fullTextSearch = async (searchText, filters = {}, options = {}, esC
 export const getSuggestions = async (prefix, size = 5, esClient) => {
   try {
     const fields = ['title', 'tags'];
-    
+
     const response = await esClient.search({
       index: INDEX_NAME,
       body: {
@@ -307,13 +307,13 @@ export const getSuggestions = async (prefix, size = 5, esClient) => {
         }
       }
     });
-    
+
     const suggestions = new Set();
     response.hits.hits.forEach(hit => {
       fields.forEach(field => {
         const value = hit._source[field];
-        if (value && typeof value === 'string' && 
-            value.toLowerCase().includes(prefix.toLowerCase())) {
+        if (value && typeof value === 'string' &&
+          value.toLowerCase().includes(prefix.toLowerCase())) {
           suggestions.add(value);
         } else if (Array.isArray(value)) {
           value.forEach(v => {
@@ -324,7 +324,7 @@ export const getSuggestions = async (prefix, size = 5, esClient) => {
         }
       });
     });
-    
+
     return Array.from(suggestions).slice(0, size);
   } catch (error) {
     console.error(`Error getting suggestions: ${error.message}`);
@@ -340,23 +340,123 @@ export const syncDocumentsToElasticsearch = async (esClient) => {
   try {
     // Find documents that aren't indexed yet
     const unindexedDocs = await Document.find({ is_indexed: false });
-    
+
     if (unindexedDocs.length === 0) {
       console.log('No documents to index');
       return { indexed: 0 };
     }
-    
+
     let successCount = 0;
-    
+
     for (const doc of unindexedDocs) {
       const success = await indexDocument(doc, esClient);
       if (success) successCount++;
     }
-    
+
     console.log(`Indexed ${successCount} documents`);
     return { indexed: successCount };
   } catch (error) {
     console.error(`Error syncing documents to Elasticsearch: ${error.message}`);
     throw error;
+  }
+};
+
+/**
+ * Remove a document from the Elasticsearch index
+ * @param {string} documentId - ID of the document to remove
+ * @param {Object} esClient - Elasticsearch client instance
+ * @returns {boolean} Success status
+ */
+export const removeDocumentFromIndex = async (documentId, esClient) => {
+  try {
+    // Check if document exists in the index
+    const exists = await esClient.exists({
+      index: INDEX_NAME,
+      id: documentId
+    });
+
+    if (!exists) {
+      console.log(`Document ${documentId} not found in Elasticsearch index, nothing to remove`);
+      return true;
+    }
+
+    // Remove document from Elasticsearch
+    await esClient.delete({
+      index: INDEX_NAME,
+      id: documentId
+    });
+
+    console.log(`Document ${documentId} successfully removed from Elasticsearch index`);
+
+    // Update MongoDB document to reflect that it's no longer indexed
+    try {
+      await Document.findByIdAndUpdate(
+        documentId,
+        { is_indexed: false }
+      );
+    } catch (mongoError) {
+      console.warn(`Document ${documentId} removed from Elasticsearch but MongoDB update failed: ${mongoError.message}`);
+      // We don't throw an error here since the Elasticsearch operation succeeded
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`Error removing document ${documentId} from index: ${error.message}`);
+    return false;
+  }
+};
+
+/**
+ * Update an indexed document in Elasticsearch
+ * @param {string} documentId - ID of the document to update
+ * @param {Object} document - Updated document data
+ * @param {Object} esClient - Elasticsearch client instance
+ * @returns {boolean} Success status
+ */
+export const updateIndexedDocument = async (documentId, document, esClient) => {
+  try {
+    // Check if document exists in the index
+    const exists = await esClient.exists({
+      index: INDEX_NAME,
+      id: documentId
+    });
+
+    if (!exists) {
+      // If document doesn't exist in index, create it
+      console.log(`Document ${documentId} not found in index, creating new index entry`);
+      return await indexDocument(document, esClient);
+    }
+
+    // Update document in Elasticsearch
+    await esClient.update({
+      index: INDEX_NAME,
+      id: documentId,
+      doc: {
+        title: document.title,
+        description: document.description || '',
+        content: document.content,
+        resourceType: document.resourceType,
+        tags: document.tags || [],
+        categories: document.categories || [],
+        owner_id: document.owner_id,
+        is_public: document.is_public,
+        view_count: document.view_count,
+        download_count: document.download_count,
+        average_rating: document.average_rating,
+        is_featured: document.is_featured,
+        updated_at: document.updated_at
+      }
+    });
+
+    // Make sure the document is marked as indexed in MongoDB
+    await Document.findByIdAndUpdate(
+      documentId,
+      { is_indexed: true }
+    );
+
+    return true;
+  } catch (error) {
+    console.error(`Error updating document ${documentId} in index: ${error.message}`);
+    return false;
   }
 };

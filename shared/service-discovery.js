@@ -19,13 +19,13 @@ const CACHE_TTL_MS = parseInt(process.env.CONSUL_CACHE_TTL_MS || '5000', 10);
 let consulClient;
 const initConsul = async () => {
   if (consulClient) return consulClient;
-  
+
   consulClient = new Consul({
     host: CONSUL_HOST,
     port: CONSUL_PORT,
     promisify: true
   });
-  
+
   // Verify connection
   try {
     await consulClient.status.leader();
@@ -64,7 +64,7 @@ const serviceCache = new Map();
 // Helper to perform retry logic
 const withRetry = async (operation, retries = MAX_RETRIES, delay = RETRY_DELAY_MS) => {
   let lastError;
-  
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       return await operation();
@@ -78,7 +78,7 @@ const withRetry = async (operation, retries = MAX_RETRIES, delay = RETRY_DELAY_M
       }
     }
   }
-  
+
   throw lastError;
 };
 
@@ -91,10 +91,10 @@ const withRetry = async (operation, retries = MAX_RETRIES, delay = RETRY_DELAY_M
  */
 export const registerService = async (serviceName, port, tags = []) => {
   const serviceId = `${serviceName}-${hostname}-${port}`;
-  
+
   try {
     const consul = await withRetry(initConsul);
-    
+
     // Register the service
     await consul.agent.service.register({
       id: serviceId,
@@ -109,9 +109,9 @@ export const registerService = async (serviceName, port, tags = []) => {
         deregistercriticalserviceafter: '30s'
       }
     });
-    
+
     console.log(`Service ${serviceName} registered with ID ${serviceId}`);
-    
+
     // Graceful shutdown handler
     const deregister = async () => {
       try {
@@ -123,11 +123,11 @@ export const registerService = async (serviceName, port, tags = []) => {
         process.exit(1);
       }
     };
-    
+
     // Handle process termination signals
     process.on('SIGINT', deregister);
     process.on('SIGTERM', deregister);
-    
+
     return serviceId;
   } catch (error) {
     console.error(`Error registering service ${serviceName}:`, error);
@@ -160,7 +160,7 @@ const verifyServiceHealth = async (service) => {
  */
 export const discoverService = async (serviceName, tag = null, bypassCache = false) => {
   const cacheKey = `${serviceName}-${tag || 'default'}`;
-  
+
   // Check cache first (unless bypassing)
   if (!bypassCache && serviceCache.has(cacheKey)) {
     const cached = serviceCache.get(cacheKey);
@@ -169,10 +169,10 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
     }
     // Cache expired, will refresh
   }
-  
+
   try {
     const consul = await withRetry(initConsul);
-    
+
     // Get all healthy instances of the service
     const services = await withRetry(async () => {
       const result = await consul.health.service({
@@ -181,14 +181,14 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
         dc: DATACENTER,
         tag: tag || NODE_ENV
       });
-      
+
       if (!result || result.length === 0) {
         throw new Error(`No healthy instances of ${serviceName} found`);
       }
-      
+
       return result;
     });
-    
+
     // Filter and verify services
     const verifiedServices = [];
     for (const svc of services) {
@@ -199,38 +199,38 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
         port: svc.Service.Port,
         tags: svc.Service.Tags
       };
-      
+
       // Double-check health directly for critical services
       if (await verifyServiceHealth(serviceInfo)) {
         verifiedServices.push(serviceInfo);
       }
     }
-    
+
     if (verifiedServices.length === 0) {
       throw new Error(`No verified healthy instances of ${serviceName} found`);
     }
-    
+
     // Load balancing - currently using random selection
     // Can be extended to support round-robin, least connections, etc.
     const randomIndex = Math.floor(Math.random() * verifiedServices.length);
     const selectedService = verifiedServices[randomIndex];
-    
+
     // Update cache
     serviceCache.set(cacheKey, {
       service: selectedService,
       timestamp: Date.now()
     });
-    
+
     return selectedService;
   } catch (error) {
     console.error(`Error discovering service ${serviceName}:`, error);
-    
+
     // Fallback to cached value even if expired
     if (serviceCache.has(cacheKey)) {
       console.warn(`Falling back to cached service information for ${serviceName}`);
       return serviceCache.get(cacheKey).service;
     }
-    
+
     throw new Error(`Service discovery failed: ${error.message}`);
   }
 };
@@ -243,7 +243,7 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
 export const listServiceInstances = async (serviceName) => {
   try {
     const consul = await withRetry(initConsul);
-    
+
     const services = await withRetry(async () => {
       return await consul.health.service({
         service: serviceName,
@@ -251,7 +251,7 @@ export const listServiceInstances = async (serviceName) => {
         dc: DATACENTER
       });
     });
-    
+
     return services.map(service => ({
       id: service.Service.ID,
       name: service.Service.Service,

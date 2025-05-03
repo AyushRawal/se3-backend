@@ -1,11 +1,13 @@
-import express, { Request, Response, NextFunction } from "express";
+import express from "express";
+import type { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
-import { Kafka, Producer } from "kafkajs";
-import resourceRoutes from "./routes/resourceRoutes";
+import KafkaJS from "kafkajs";
+const { Kafka, Producer } = KafkaJS;
+import resourceRoutes from "./routes/resourceRoutes.ts";
 import { registerService } from "../shared/service-discovery.js";
-import { getProducer, disconnectProducer } from "./services/documentEventProducer";
+import { getProducer, disconnectProducer } from "./services/documentEventProducer.ts";
 
 // Load environment variables
 dotenv.config();
@@ -30,10 +32,12 @@ const connectMongoDB = async () => {
 // Kafka logging setup
 const kafka = new Kafka({
   clientId: "resource-service",
-  brokers: [process.env.KAFKA_BROKER as string],
+  brokers: [process.env.KAFKA_BROKERS as string],
 });
 
-const producer: Producer = kafka.producer();
+const producer: Producer = kafka.producer({
+  createPartitioner: KafkaJS.Partitioners.DefaultPartitioner
+});
 const logTopic = "resource-service-logs";
 
 // Connect to Kafka for logging
@@ -80,7 +84,7 @@ const log = async (
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); 
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware
@@ -89,7 +93,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`);
-    
+
     // Log to Kafka if connected (non-blocking)
     log("INFO", `${req.method} ${req.originalUrl}`, {
       method: req.method,
@@ -111,7 +115,7 @@ app.get("/health", async (req: Request, res: Response): Promise<void> => {
   let mongoStatus = mongoose.connection.readyState === 1;
   let kafkaStatus = false;
   let documentProducerStatus = false;
-  
+
   // Check Kafka connection for logging
   try {
     await producer.send({ topic: logTopic, messages: [{ value: "health_check" }] });
@@ -119,7 +123,7 @@ app.get("/health", async (req: Request, res: Response): Promise<void> => {
   } catch (error) {
     console.error("Kafka health check failed:", error);
   }
-  
+
   // Check Kafka connection for document events
   try {
     const docProducer = await getProducer();
@@ -127,10 +131,10 @@ app.get("/health", async (req: Request, res: Response): Promise<void> => {
   } catch (error) {
     console.error("Document producer health check failed:", error);
   }
-  
+
   // Determine overall status
   const allDependenciesHealthy = mongoStatus && (kafkaStatus || documentProducerStatus);
-  
+
   res.status(allDependenciesHealthy ? 200 : 503).json({
     status: allDependenciesHealthy ? "healthy" : "degraded",
     service: SERVICE_NAME,
@@ -147,7 +151,7 @@ app.get("/health", async (req: Request, res: Response): Promise<void> => {
 // Error handling middleware
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error(`Error: ${err.message}`, err.stack);
-  
+
   // Log error to Kafka
   log("ERROR", "Unhandled server error", {
     error: err.message,
@@ -155,7 +159,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     path: req.originalUrl,
     method: req.method,
   }).catch(e => console.error("Error logging to Kafka:", e));
-  
+
   res.status(500).json({
     success: false,
     error: "Internal Server Error"
@@ -170,10 +174,10 @@ const initializeInfrastructure = async () => {
     console.error("Failed to connect to MongoDB. Exiting...");
     process.exit(1);
   }
-  
+
   // Connect to Kafka for logging (continue even if it fails)
   await connectKafka();
-  
+
   // Connect to Kafka for document events (continue even if it fails)
   try {
     await getProducer();
@@ -190,12 +194,12 @@ const startServer = async () => {
   try {
     // Initialize infrastructure connections
     await initializeInfrastructure();
-    
+
     // Start the HTTP server
     const server = app.listen(PORT, () => {
       console.log(`Resource service running on http://localhost:${PORT}`);
     });
-    
+
     // Register with service discovery
     try {
       await registerService(SERVICE_NAME, PORT);
@@ -203,16 +207,16 @@ const startServer = async () => {
     } catch (error) {
       console.error("Failed to register with service discovery:", error.message);
     }
-    
+
     // Setup graceful shutdown
     const shutdown = async () => {
       console.log("Shutting down gracefully...");
-      
+
       // Close HTTP server
       server.close(() => {
         console.log("HTTP server closed");
       });
-      
+
       // Disconnect Kafka logging producer
       if (producer) {
         try {
@@ -222,14 +226,14 @@ const startServer = async () => {
           console.error("Error disconnecting from Kafka logging:", error);
         }
       }
-      
+
       // Disconnect Kafka document producer
       try {
         await disconnectProducer();
       } catch (error) {
         console.error("Error disconnecting document producer:", error);
       }
-      
+
       // Disconnect MongoDB
       try {
         await mongoose.disconnect();
@@ -237,14 +241,14 @@ const startServer = async () => {
       } catch (error) {
         console.error("Error disconnecting from MongoDB:", error);
       }
-      
+
       process.exit(0);
     };
-    
+
     // Handle process termination signals
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
-    
+
   } catch (error) {
     console.error("Error starting server:", error);
     process.exit(1);

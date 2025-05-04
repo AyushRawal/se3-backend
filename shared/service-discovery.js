@@ -132,7 +132,7 @@ export const registerService = async (serviceName, port, tags = []) => {
 
 /**
  * Debug helper to log service discovery steps
- * @param {string} message - Debug message 
+ * @param {string} message - Debug message
  * @param {any} data - Optional data to log
  */
 const debugLog = (message, data = null) => {
@@ -173,21 +173,21 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
       service: serviceName,
       dc: DATACENTER
     };
-    
+
     // Only apply tag filtering if explicitly requested
     if (tag) {
       queryParams.tag = tag;
     }
-    
+
     debugLog(`Consul query parameters:`, queryParams);
 
     // Get all instances of the service without health check filtering
     const services = await withRetry(async () => {
       // Use catalog.service.nodes instead of health.service to avoid health filtering
       const result = await consul.catalog.service.nodes(queryParams);
-      
+
       debugLog(`Consul returned ${result.length} services`);
-      
+
       if (!result || result.length === 0) {
         throw new Error(`No instances of ${serviceName} found in Consul`);
       }
@@ -209,7 +209,7 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
     // Load balancing - currently using random selection
     const randomIndex = Math.floor(Math.random() * verifiedServices.length);
     const selectedService = verifiedServices[randomIndex];
-    
+
     debugLog(`Selected service instance: ${selectedService.id}`);
 
     // Update cache
@@ -302,21 +302,21 @@ export const troubleshootService = async (serviceName) => {
       allServices: [],
       serviceInstances: []
     };
-    
+
     // Get all registered services
     diagnostics.allServices = Object.keys(await consul.catalog.service.list());
     console.log(`Found ${diagnostics.allServices.length} registered services`);
-    
+
     // Check if our target service exists at all
     const serviceExists = diagnostics.allServices.includes(serviceName);
     diagnostics.serviceFound = serviceExists;
-    
+
     if (serviceExists) {
       // Get all instances of the service regardless of health
       const instances = await consul.catalog.service.nodes({ service: serviceName });
       diagnostics.serviceInstances = instances;
     }
-    
+
     return diagnostics;
   } catch (error) {
     console.error(`Error troubleshooting service ${serviceName}:`, error);

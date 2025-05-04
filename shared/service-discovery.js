@@ -6,14 +6,14 @@ import os from 'os';
 dotenv.config();
 
 // Default Consul configuration
-const CONSUL_HOST = process.env.CONSUL_HOST || 'localhost';
+const CONSUL_HOST = process.env.CONSUL_HOST || '10.1.37.28';
 const CONSUL_PORT = process.env.CONSUL_PORT || 8500;
-const HEALTH_CHECK_INTERVAL = process.env.HEALTH_CHECK_INTERVAL || '10s';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const DATACENTER = process.env.CONSUL_DC || 'dc1';
 const MAX_RETRIES = parseInt(process.env.CONSUL_MAX_RETRIES || '3', 10);
 const RETRY_DELAY_MS = parseInt(process.env.CONSUL_RETRY_DELAY_MS || '1000', 10);
 const CACHE_TTL_MS = parseInt(process.env.CONSUL_CACHE_TTL_MS || '5000', 10);
+const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
 // Initialize Consul client with retry mechanism
 let consulClient;
@@ -95,19 +95,14 @@ export const registerService = async (serviceName, port, tags = []) => {
   try {
     const consul = await withRetry(initConsul);
 
-    // Register the service
+    // Register the service - make sure we always add the NODE_ENV as a tag
     await consul.agent.service.register({
       id: serviceId,
       name: serviceName,
       address: ipAddress,
       port: parseInt(port, 10),
-      tags: [...tags, NODE_ENV],
-      check: {
-        http: `http://${ipAddress}:${port}/health`,
-        interval: HEALTH_CHECK_INTERVAL,
-        timeout: '5s',
-        deregistercriticalserviceafter: '30s'
-      }
+      tags: [...tags, NODE_ENV]
+      // Removed health check configuration here
     });
 
     console.log(`Service ${serviceName} registered with ID ${serviceId}`);
@@ -136,23 +131,21 @@ export const registerService = async (serviceName, port, tags = []) => {
 };
 
 /**
- * Verify if a service instance is healthy by directly checking its health endpoint
- * @param {Object} service - Service instance details
- * @returns {Promise<boolean>} - Whether the service is healthy
+ * Debug helper to log service discovery steps
+ * @param {string} message - Debug message
+ * @param {any} data - Optional data to log
  */
-const verifyServiceHealth = async (service) => {
-  try {
-    const response = await fetch(`http://${service.address}:${service.port}/health`, {
-      timeout: 2000
-    });
-    return response.ok;
-  } catch (error) {
-    return false;
+const debugLog = (message, data = null) => {
+  if (DEBUG_MODE) {
+    console.log(`[Service Discovery] ${message}`);
+    if (data) {
+      console.log(data);
+    }
   }
 };
 
 /**
- * Discover a service from Consul with caching and health verification
+ * Discover a service from Consul with caching
  * @param {string} serviceName - Name of the service to discover
  * @param {string} tag - Optional tag to filter services
  * @param {boolean} bypassCache - Whether to bypass cache and force a fresh lookup
@@ -160,60 +153,64 @@ const verifyServiceHealth = async (service) => {
  */
 export const discoverService = async (serviceName, tag = null, bypassCache = false) => {
   const cacheKey = `${serviceName}-${tag || 'default'}`;
+  debugLog(`Discovering service ${serviceName} with tag ${tag || 'none'}`);
 
   // Check cache first (unless bypassing)
   if (!bypassCache && serviceCache.has(cacheKey)) {
     const cached = serviceCache.get(cacheKey);
     if (cached.timestamp > Date.now() - CACHE_TTL_MS) {
+      debugLog(`Using cached service data for ${serviceName}`, cached.service);
       return cached.service;
     }
-    // Cache expired, will refresh
+    debugLog(`Cache expired for ${serviceName}`);
   }
 
   try {
     const consul = await withRetry(initConsul);
 
-    // Get all healthy instances of the service
+    // Prepare query parameters - only add tag filter if explicitly provided
+    const queryParams = {
+      service: serviceName,
+      dc: DATACENTER
+    };
+
+    // Only apply tag filtering if explicitly requested
+    if (tag) {
+      queryParams.tag = tag;
+    }
+
+    debugLog(`Consul query parameters:`, queryParams);
+
+    // Get all instances of the service without health check filtering
     const services = await withRetry(async () => {
-      const result = await consul.health.service({
-        service: serviceName,
-        passing: true,
-        dc: DATACENTER,
-        tag: tag || NODE_ENV
-      });
+      // Use catalog.service.nodes instead of health.service to avoid health filtering
+      const result = await consul.catalog.service.nodes(queryParams);
+
+      debugLog(`Consul returned ${result.length} services`);
 
       if (!result || result.length === 0) {
-        throw new Error(`No healthy instances of ${serviceName} found`);
+        throw new Error(`No instances of ${serviceName} found in Consul`);
       }
 
       return result;
     });
 
-    // Filter and verify services
-    const verifiedServices = [];
-    for (const svc of services) {
-      const serviceInfo = {
-        id: svc.Service.ID,
-        name: svc.Service.Service,
-        address: svc.Service.Address,
-        port: svc.Service.Port,
-        tags: svc.Service.Tags
-      };
+    // Extract service information
+    const verifiedServices = services.map(svc => ({
+      id: svc.ServiceID,
+      name: svc.ServiceName,
+      address: svc.ServiceAddress || svc.Address,
+      port: svc.ServicePort,
+      tags: svc.ServiceTags || []
+    }));
 
-      // Double-check health directly for critical services
-      if (await verifyServiceHealth(serviceInfo)) {
-        verifiedServices.push(serviceInfo);
-      }
-    }
-
-    if (verifiedServices.length === 0) {
-      throw new Error(`No verified healthy instances of ${serviceName} found`);
-    }
+    debugLog(`Extracted ${verifiedServices.length} service instances:`, verifiedServices);
 
     // Load balancing - currently using random selection
-    // Can be extended to support round-robin, least connections, etc.
     const randomIndex = Math.floor(Math.random() * verifiedServices.length);
     const selectedService = verifiedServices[randomIndex];
+
+    debugLog(`Selected service instance: ${selectedService.id}`);
 
     // Update cache
     serviceCache.set(cacheKey, {
@@ -231,7 +228,7 @@ export const discoverService = async (serviceName, tag = null, bypassCache = fal
       return serviceCache.get(cacheKey).service;
     }
 
-    throw new Error(`Service discovery failed: ${error.message}`);
+    throw new Error(`Service discovery failed for ${serviceName}: ${error.message}`);
   }
 };
 
@@ -244,20 +241,21 @@ export const listServiceInstances = async (serviceName) => {
   try {
     const consul = await withRetry(initConsul);
 
+    const queryParams = {
+      service: serviceName,
+      dc: DATACENTER
+    };
+
     const services = await withRetry(async () => {
-      return await consul.health.service({
-        service: serviceName,
-        passing: true,
-        dc: DATACENTER
-      });
+      return await consul.catalog.service.nodes(queryParams);
     });
 
     return services.map(service => ({
-      id: service.Service.ID,
-      name: service.Service.Service,
-      address: service.Service.Address,
-      port: service.Service.Port,
-      tags: service.Service.Tags
+      id: service.ServiceID,
+      name: service.ServiceName,
+      address: service.ServiceAddress || service.Address,
+      port: service.ServicePort,
+      tags: service.ServiceTags || []
     }));
   } catch (error) {
     console.error(`Error listing instances of service ${serviceName}:`, error);
@@ -290,3 +288,60 @@ export const isServiceDiscoveryAvailable = async () => {
     return false;
   }
 };
+
+/**
+ * Troubleshoot service discovery issues
+ * @param {string} serviceName - Name of the service to troubleshoot
+ * @returns {Promise<Object>} - Diagnostic information
+ */
+export const troubleshootService = async (serviceName) => {
+  try {
+    const consul = await withRetry(initConsul);
+    const diagnostics = {
+      consulStatus: 'connected',
+      allServices: [],
+      serviceInstances: []
+    };
+
+    // Get all registered services
+    diagnostics.allServices = Object.keys(await consul.catalog.service.list());
+    console.log(`Found ${diagnostics.allServices.length} registered services`);
+
+    // Check if our target service exists at all
+    const serviceExists = diagnostics.allServices.includes(serviceName);
+    diagnostics.serviceFound = serviceExists;
+
+    if (serviceExists) {
+      // Get all instances of the service regardless of health
+      const instances = await consul.catalog.service.nodes({ service: serviceName });
+      diagnostics.serviceInstances = instances;
+    }
+
+    return diagnostics;
+  } catch (error) {
+    console.error(`Error troubleshooting service ${serviceName}:`, error);
+    return {
+      consulStatus: 'error',
+      error: error.message
+    };
+  }
+};
+
+const testServiceDiscovery = async () => {
+  const serviceName = 'auth-service';
+
+  try {
+    console.log(`Attempting to discover service: ${serviceName}`);
+    const service = await discoverService(serviceName, null, true); // force fresh lookup
+
+    console.log(`✅ Service discovered successfully:`);
+    console.log(`  - ID: ${service.id}`);
+    console.log(`  - Address: ${service.address}`);
+    console.log(`  - Port: ${service.port}`);
+    console.log(`  - Full URL: http://${service.address}:${service.port}/health`);
+  } catch (error) {
+    console.error(`❌ Failed to discover service "${serviceName}":`, error.message);
+  }
+};
+
+testServiceDiscovery();

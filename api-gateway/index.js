@@ -46,6 +46,7 @@ const apiLimiter = rateLimit({
   },
 });
 app.use(apiLimiter);
+app.use(verifyToken);
 
 // ——— RAW‐BODY PROXIES (login/register) ———————————————————————————————
 
@@ -265,7 +266,6 @@ function createDynamicProxy(serviceName) {
 
 // ——— JWT‐guarded & search routes ———————————————————————————————————————
 
-app.use(verifyToken);
 
 app.use(
   "/api/search",

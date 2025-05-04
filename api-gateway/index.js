@@ -53,12 +53,38 @@ app.use(
   "/api/auth/login",
   createDynamicProxy("auth-service", { "^/api/auth/login": "/api/auth/login" })
 );
-
+app.use(
+  "/api/auth/verify-token",
+  createDynamicProxy("auth-service", { "^/api/auth/verify-token": "/api/auth/verify-token" })
+);
+app.use(
+  "/api/auth/profile",
+  createDynamicProxy("auth-service", { "^/api/auth/profile": "/api/auth/profile" })
+);
 app.use(
   "/api/auth/register",
   createDynamicProxy("auth-service", { "^/api/auth/register": "/api/auth/register" })
 );
-
+app.use(
+  "/api/search",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/suggestions",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/advanced",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/documents",
+  createDynamicProxy("search-service", { "^/api/search/documents": "/api/search/documents" })
+);
+app.use(
+  "/api/search/sync",
+  createDynamicProxy("search-service", { "^/api/search/sync": "/api/search/sync" })
+);
 // ——— BODY PARSERS —————————————————————————————————————————————————————
 
 app.use(express.json({ limit: "1mb" }));

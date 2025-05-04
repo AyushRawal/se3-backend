@@ -3,39 +3,41 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import cors from "cors";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
 import {
   registerService,
   discoverService,
+  troubleshootService,
+  isServiceDiscoveryAvailable
 } from "../shared/service-discovery.js";
-import rateLimit from "express-rate-limit";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.GATEWAY_PORT || 5000;
+const PORT = parseInt(process.env.GATEWAY_PORT, 10) || 5000;
 const SERVICE_NAME = "api-gateway";
+const SERVICE_TAG = process.env.SERVICE_TAG || process.env.NODE_ENV || "development";
+const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 
-// Middleware
+const circuitStates = {};
+
+// ——— Middleware —————————————————————————————————————————————————————————
+
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
+  console.log(`[Middleware] Incoming request: ${req.method} ${req.originalUrl}`);
   res.on("finish", () => {
     const duration = Date.now() - start;
-    console.log(
-      `[${new Date().toISOString()}] ${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`,
-    );
+    console.log(`[Middleware] Completed ${req.ip} ${req.method} ${req.originalUrl} → ${res.statusCode} in ${duration}ms`);
   });
   next();
 });
 
-// Rate limiting middleware
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -43,255 +45,253 @@ const apiLimiter = rateLimit({
     status: 429,
   },
 });
-
-// Apply rate limiting to all requests
 app.use(apiLimiter);
 
-// JWT verification middleware
+// ——— RAW‐BODY PROXIES (login/register) ———————————————————————————————
+
+app.use(
+  "/api/auth/login",
+  createDynamicProxy("auth-service", { "^/api/auth/login": "/api/auth/login" })
+);
+
+app.use(
+  "/api/auth/register",
+  createDynamicProxy("auth-service", { "^/api/auth/register": "/api/auth/register" })
+);
+
+// ——— BODY PARSERS —————————————————————————————————————————————————————
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// ——— JWT VERIFICATION ——————————————————————————————————————————————
+
 const verifyToken = (req, res, next) => {
+  console.log("[Auth] Verifying token if present");
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-
   if (!token) {
-    return next(); // Allow request to proceed without user info
+    console.log("[Auth] No token provided");
+    return next();
   }
-
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("[Auth] Token valid for user:", decoded.id);
     req.user = decoded;
-
-    // Add user info to headers for downstream services
     req.headers["x-user-id"] = decoded.id;
     req.headers["x-user-role"] = decoded.role;
     req.headers["x-user-email"] = decoded.email;
+  } catch (err) {
+    console.error("[Auth] Token verification failed:", err.message);
+  }
+  next();
+};
 
-    next();
-  } catch (error) {
-    // Invalid token, but still let request proceed
-    console.error("Token verification failed:", error.message);
-    next();
+// ——— DISCOVERY & CIRCUIT BREAKER HELPERS ——————————————————————————————————
+
+const debugLog = (category, message, data = null) => {
+  if (DEBUG_MODE) {
+    console.log(`[${category}] ${message}`);
+    if (data) console.log(JSON.stringify(data, null, 2));
   }
 };
 
-// Check if a service is healthy with improved error handling and caching
-const checkServiceHealth = async (serviceName) => {
+const discoverServiceInstance = async (serviceName) => {
+  debugLog("Discovery", `Finding '${serviceName}' with tag='${SERVICE_TAG}'`);
   try {
-    // Use our enhanced service discovery with caching and health verification
-    // The bypassCache=false parameter ensures we use cached values when possible for better performance
-    const service = await discoverService(serviceName, null, false);
-
-    // Double-verify health status
+    const svc = await discoverService(serviceName, SERVICE_TAG, false);
+    console.log(`[Discovery] ${serviceName} @ ${svc.address}:${svc.port} (tag=${SERVICE_TAG})`);
+    return { success: true, service: svc };
+  } catch (err) {
+    console.warn(`[Discovery] No '${serviceName}' with tag '${SERVICE_TAG}':`, err.message);
+  }
+  console.log(`[Discovery] Retrying '${serviceName}' without tag`);
+  try {
+    const svc2 = await discoverService(serviceName, null, true);
+    console.log(`[Discovery] ${serviceName} @ ${svc2.address}:${svc2.port} (no tag)`);
+    return { success: true, service: svc2 };
+  } catch (err2) {
+    console.error(`[Discovery] Retry failed for ${serviceName}:`, err2.message);
     try {
-      const healthCheckUrl = `http://${service.address}:${service.port}/health`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-      const response = await fetch(healthCheckUrl, {
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        return { healthy: true, service };
-      }
-
-      return { healthy: false };
-    } catch (error) {
-      console.error(
-        `Direct health check failed for ${serviceName}:`,
-        error.message,
-      );
-      // If the direct health check fails but service discovery says it's healthy,
-      // we'll still consider it potentially healthy but mark it for verification
-      return { healthy: true, service, needsVerification: true };
-    }
-  } catch (error) {
-    console.error(
-      `Service discovery health check failed for ${serviceName}:`,
-      error.message,
-    );
-    return { healthy: false };
+      const diag = await troubleshootService(serviceName);
+      console.error(`[Discovery] Diagnostics for ${serviceName}:`, JSON.stringify(diag, null, 2));
+    } catch (_) {}
+    return { success: false, error: err2.message };
   }
 };
 
-// Create dynamic proxy middleware with timeout and circuit breaker pattern
-const createDynamicProxy = (serviceName, pathRewrite) => {
-  // Simple circuit breaker state
-  let circuitOpen = false;
-  let failureCount = 0;
-  let lastFailureTime = 0;
-  const FAILURE_THRESHOLD = 5;
-  const CIRCUIT_RESET_TIMEOUT = 30000; // 30 seconds
-
-  return async (req, res, next) => {
-    // Check if circuit is open
-    if (circuitOpen) {
-      const now = Date.now();
-      if (now - lastFailureTime > CIRCUIT_RESET_TIMEOUT) {
-        // Try to reset circuit after timeout
-        circuitOpen = false;
-        failureCount = 0;
-        console.log(`Circuit reset for ${serviceName}`);
-      } else {
-        return res.status(503).json({
-          error: `Service ${serviceName} is temporarily unavailable, please try again later`,
-          status: "circuit-open",
-        });
-      }
-    }
-
-    try {
-      // Discover service instance with health check
-      const healthCheck = await checkServiceHealth(serviceName);
-
-      if (!healthCheck.healthy) {
-        failureCount++;
-        lastFailureTime = Date.now();
-
-        if (failureCount >= FAILURE_THRESHOLD) {
-          circuitOpen = true;
-          console.error(
-            `Circuit opened for ${serviceName} due to multiple failures`,
-          );
-        }
-
-        return res.status(503).json({
-          error: `Service ${serviceName} is currently unhealthy`,
-          status: "unhealthy",
-        });
-      }
-
-      const service = healthCheck.service;
-      const target = `http://${service.address}:${service.port}`;
-
-      // Reset failure count on successful discovery
-      failureCount = 0;
-
-      // Create proxy with timeout
-      const proxy = createProxyMiddleware({
-        target,
-        changeOrigin: true,
-        pathRewrite,
-        timeout: 10000, // 10 second timeout
-        proxyTimeout: 10000,
-        onProxyReq: (proxyReq, req, res) => {
-          console.log(`Proxying to ${serviceName}: ${req.method} ${req.path}`);
-
-          // Forward auth headers if present
-          if (req.user) {
-            proxyReq.setHeader("x-user-id", req.user.id);
-            proxyReq.setHeader("x-user-role", req.user.role);
-            proxyReq.setHeader("x-user-email", req.user.email);
-          }
-        },
-        onError: (err, req, res) => {
-          failureCount++;
-          lastFailureTime = Date.now();
-
-          if (failureCount >= FAILURE_THRESHOLD) {
-            circuitOpen = true;
-            console.error(
-              `Circuit opened for ${serviceName} due to multiple failures`,
-            );
-          }
-
-          const statusCode = err.code === "ECONNREFUSED" ? 503 : 500;
-          res.status(statusCode).json({
-            error: `Error connecting to ${serviceName}: ${err.message}`,
-            status: "proxy-error",
-          });
-        },
-      });
-
-      // Execute proxy
-      return proxy(req, res, next);
-    } catch (error) {
-      console.error(
-        `Service discovery failed for ${serviceName}: ${error.message}`,
-      );
-
-      failureCount++;
-      lastFailureTime = Date.now();
-
-      if (failureCount >= FAILURE_THRESHOLD) {
-        circuitOpen = true;
-        console.error(
-          `Circuit opened for ${serviceName} due to multiple failures`,
-        );
-      }
-
-      return res.status(503).json({
-        error: `Service ${serviceName} is currently unavailable`,
-        status: "discovery-error",
-      });
-    }
-  };
+const getCircuitState = (serviceName) => {
+  if (!circuitStates[serviceName]) {
+    circuitStates[serviceName] = {
+      failures: 0,
+      circuitOpen: false,
+      lastFailureTs: 0,
+      THRESHOLD: 5,
+      CIRCUIT_RESET_MS: 30_000
+    };
+  }
+  return circuitStates[serviceName];
 };
 
-// Apply token verification to all requests
+// ——— PROXY FACTORY WITH LOGGING & pathRewrite ———————————————————————————————
+
+/**
+ * Return an Express middleware that:
+ *   1. Discovers the target instance via Consul
+ *   2. Applies circuit‑breaker logic
+ *   3. Proxies the request, preserving the FULL original URL
+ *      (so /api/auth/register reaches the auth‑service unchanged)
+ */
+function createDynamicProxy(serviceName) {
+  return async (req, res, next) => {
+    console.log(`\n=== [Proxy] Handling request for '${serviceName}' ===`);
+    console.log(`[Proxy] Incoming URL: ${req.method} ${req.originalUrl}`);
+
+    /* ——— Circuit‑breaker pre‑check ——— */
+    const circuit = getCircuitState(serviceName);
+    if (circuit.circuitOpen) {
+      const waited = Date.now() - circuit.lastFailureTs;
+      console.warn(`[Proxy] Circuit OPEN for ${serviceName} (waited ${waited} ms)`);
+      if (waited > circuit.CIRCUIT_RESET_MS) {
+        circuit.circuitOpen = false;
+        circuit.failures = 0;
+        console.log(`[Proxy] Circuit RESET for ${serviceName}`);
+      } else {
+        return res
+          .status(503)
+          .json({ error: `${serviceName} unavailable`, status: "circuit-open" });
+      }
+    }
+
+    /* ——— Service discovery ——— */
+    const { success, service, error } = await discoverServiceInstance(serviceName);
+    if (!success) {
+      circuit.failures++;
+      circuit.lastFailureTs = Date.now();
+      console.error(`[Proxy] Discovery failed for ${serviceName}:`, error);
+      if (circuit.failures >= circuit.THRESHOLD) {
+        circuit.circuitOpen = true;
+        console.error(`[Proxy] Circuit OPENED for ${serviceName}`);
+      }
+      return res.status(503).json({
+        error: `${serviceName} unavailable`,
+        details: error,
+        status: "unavailable",
+      });
+    }
+    circuit.failures = 0;
+
+    /* ——— Build target URL & log it ——— */
+    const target = `http://${service.address}:${service.port}`;
+    console.log(
+      `[Proxy] Calling upstream → ${service.address}:${service.port}${req.originalUrl}`
+    );
+
+    /* ——— Create proxy middleware ——— */
+    const proxy = createProxyMiddleware({
+      target,
+      changeOrigin: true,
+      timeout: 10_000,
+      proxyTimeout: 10_000,
+      logLevel: DEBUG_MODE ? "debug" : "warn",
+
+      // Preserve the FULL original path that the client requested.
+      // Express strips the mount‑path from req.url, so we restore it from req.originalUrl.
+      pathRewrite: (_path, req) => req.originalUrl,
+
+      /* — Hooks — */
+      onProxyReq(proxyReq, req) {
+        console.log(`[Proxy][onProxyReq] ${req.method} ${req.originalUrl}`);
+        if (req.user) {
+          proxyReq.setHeader("x-user-id", req.user.id);
+          proxyReq.setHeader("x-user-role", req.user.role);
+          proxyReq.setHeader("x-user-email", req.user.email);
+        }
+      },
+
+      onProxyRes(proxyRes, req) {
+        console.log(
+          `[Proxy][onProxyRes] ${serviceName} ${req.method} ${req.originalUrl} → ${proxyRes.statusCode}`
+        );
+      },
+
+      onError(err, req, res) {
+        circuit.failures++;
+        circuit.lastFailureTs = Date.now();
+        console.error(`[Proxy][onError] ${serviceName}:`, err.message);
+        if (circuit.failures >= circuit.THRESHOLD) {
+          circuit.circuitOpen = true;
+          console.error(`[Proxy] Circuit OPENED for ${serviceName}`);
+        }
+        const code = err.code === "ECONNREFUSED" ? 503 : 500;
+        res.status(code).json({
+          error: `Error connecting to ${serviceName}: ${err.message}`,
+          status: "proxy-error",
+        });
+      },
+    });
+
+    /* ——— Hand off control to http‑proxy‑middleware ——— */
+    return proxy(req, res, next);
+  };
+}
+
+
+// ——— JWT‐guarded & search routes ———————————————————————————————————————
+
 app.use(verifyToken);
 
-// Routes with dynamic service discovery
-app.use(
-  "/api/auth",
-  createDynamicProxy("auth-service", { "^/api/auth": "/api/auth" }),
-);
 app.use(
   "/api/search",
-  createDynamicProxy("search-service", { "^/api/search": "/api/search" }),
+  createDynamicProxy("search-service", { "^/api/search": "" })
 );
 
-// Advanced health check endpoint with downstream service status
-app.get("/health", async (req, res) => {
-  // Check downstream services
-  const authServiceHealth = await checkServiceHealth("auth-service");
-  const searchServiceHealth = await checkServiceHealth("search-service");
+// ——— DIAGNOSTIC ENDPOINT ——————————————————————————————————————————————
 
-  res.json({
-    status: "OK",
-    service: SERVICE_NAME,
-    timestamp: new Date(),
-    user: req.user ? { id: req.user.id, role: req.user.role } : null,
-    dependencies: {
-      "auth-service": authServiceHealth.healthy ? "healthy" : "unhealthy",
-      "search-service": searchServiceHealth.healthy ? "healthy" : "unhealthy",
-    },
-  });
-});
-
-// Handle 404 routes
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Not Found",
-    message: `Route ${req.originalUrl} does not exist`,
-  });
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({
-    error: "Internal Server Error",
-    message:
-      process.env.NODE_ENV === "production"
-        ? "An unexpected error occurred"
-        : err.message,
-  });
-});
-
-// Start the server
-app.listen(PORT, async () => {
-  console.log(`API Gateway running on http://localhost:${PORT}`);
-
-  // Register with service discovery
+app.get("/api/system/discovery-status", async (req, res) => {
   try {
-    await registerService(SERVICE_NAME, PORT);
-    console.log(
-      `${SERVICE_NAME} registered successfully with service discovery`,
-    );
-  } catch (error) {
-    console.error("Failed to register with service discovery:", error.message);
+    const avail = await isServiceDiscoveryAvailable();
+    const resp = { status: avail ? "online" : "offline", message: avail ? "OK" : "Consul down" };
+    if (avail && req.user?.role === "admin") {
+      const diags = {};
+      for (const svc of ["auth-service", "search-service"]) {
+        try { diags[svc] = await troubleshootService(svc); }
+        catch (e) { diags[svc] = { error: e.message }; }
+      }
+      resp.diagnostics = diags;
+    }
+    res.json(resp);
+  } catch (e) {
+    res.status(500).json({ status: "error", message: e.message });
   }
 });
 
+// ——— FALLBACK HANDLERS ———————————————————————————————————————————————————
+
+app.use((req, res) => {
+  console.error(`[404] ${req.method} ${req.originalUrl}`);
+  res.status(404).json({ error: "Not Found", message: `Route ${req.originalUrl} does not exist` });
+});
+
+app.use((err, req, res, _next) => {
+  console.error("[Unhandled Error]", err);
+  res.status(500).json({ error: "Internal Server Error", message: err.message });
+});
+
+// ——— START & REGISTER ————————————————————————————————————————————————————
+
+async function startServer() {
+  const avail = await isServiceDiscoveryAvailable();
+  if (!avail) console.warn("[Startup] Consul not reachable; gateway will still start.");
+  app.listen(PORT, async () => {
+    console.log(`[Startup] API Gateway running on http://0.0.0.0:${PORT}`);
+    try {
+      await registerService(SERVICE_NAME, PORT, [SERVICE_TAG]);
+      console.log(`[Startup] ${SERVICE_NAME} registered successfully`);
+    } catch (e) {
+      console.error(`[Startup] Failed to register:`, e.message);
+    }
+  });
+}
+
+startServer();

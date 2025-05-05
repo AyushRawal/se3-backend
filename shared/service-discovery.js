@@ -344,4 +344,4 @@ const testServiceDiscovery = async () => {
   }
 };
 
-testServiceDiscovery();
+// testServiceDiscovery();

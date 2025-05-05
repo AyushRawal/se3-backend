@@ -1,7 +1,30 @@
-import mongoose from 'mongoose';
+import mongoose, { Document, Schema } from 'mongoose';
 
-// Document schema for MongoDB
-const DocumentSchema = new mongoose.Schema({
+// Define the Resource document interface
+// export interface IResource extends Document {
+//   title: string;
+//   description?: string;
+//   file_path: string;
+//   file_key: string; // S3 object key
+//   file_url: string; // S3 URL
+//   file_size: number;
+//   mime_type: string;
+//   owner_id: number; // References PostgreSQL user ID
+//   is_public: boolean;
+//   resourceType: string;
+//   tags: string[];
+//   categories: string[];
+//   view_count: number;
+//   download_count: number;
+//   average_rating: number;
+//   is_featured: boolean;
+//   is_indexed: boolean;
+//   created_at: Date;
+//   updated_at: Date;
+// }
+
+// Define the Resource schema
+const ResourceSchema = new Schema({
   title: {
     type: String,
     required: true,
@@ -77,14 +100,19 @@ const DocumentSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   }
-}, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
+}, {
+  timestamps: {
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  }
+});
 
 // Middleware to mark document for indexing when updated
-DocumentSchema.pre('save', function(next) {
+ResourceSchema.pre('save', function(next) {
   this.is_indexed = false;
   next();
 });
 
-const Document = mongoose.model('Document', DocumentSchema);
-
-export default Document;
+// Create and export the Resource model
+const Resource = mongoose.model('Resource', ResourceSchema);
+export default Resource;

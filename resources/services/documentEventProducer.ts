@@ -1,6 +1,7 @@
 import KafkaJS from "kafkajs";
 const { Kafka, Producer } = KafkaJS;
-import type { IResource } from '../models/Resource.ts';
+import type { IResource } from '../models/Resource.js';
+import { TOPICS } from '../../shared/kafka/config.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -33,7 +34,7 @@ export const getProducer = async (): Promise<Producer> => {
  * Publish document created event to Kafka
  * @param document The created document
  */
-export const publishDocumentCreated = async (document: IResource): Promise<boolean> => {
+export const publishDocumentCreated = async (document): Promise<boolean> => {
   try {
     const kafkaProducer = await getProducer();
 
@@ -58,7 +59,7 @@ export const publishDocumentCreated = async (document: IResource): Promise<boole
     };
 
     await kafkaProducer.send({
-      topic: process.env.DOCUMENT_TOPIC || 'document.created',
+      topic: TOPICS.DOCUMENT_CREATED,
       messages: [
         {
           value: JSON.stringify(payload),

@@ -39,7 +39,7 @@ export const connectDB = async () => {
   try {
     await pool.connect();
     console.log('Connected to PostgreSQL database!');
-    
+
     // Initialize tables after successful connection
     await initTables();
   } catch (err) {

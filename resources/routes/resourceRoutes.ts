@@ -1,13 +1,27 @@
-import type { Request, Response } from 'express';
+import type { Request, Response } from "express";
 import express from "express";
-import multer from 'multer';
-import multerS3 from 'multer-s3';
-import path from 'path';
-import { S3Client, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { authenticate, authorizeAdmin, optionalAuthenticate } from '../middleware/auth.ts';
-import Resource from '../models/Resource.ts';
-import { publishDocumentCreated, publishDocumentUpdated, publishDocumentDeleted } from '../services/documentEventProducer.ts';
-import mongoose from 'mongoose';
+import multer from "multer";
+import multerS3 from "multer-s3";
+import path from "path";
+import {
+  S3Client,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
+import {
+  authenticate,
+  authorizeAdmin,
+  optionalAuthenticate,
+} from "../middleware/auth.ts";
+// import Resource from "../models/Resource.js";
+// import Resource from "../../search/models/document.js"
+import Resource from "../models/document.js"
+import {
+  publishDocumentCreated,
+  publishDocumentUpdated,
+  publishDocumentDeleted,
+} from "../services/documentEventProducer.ts";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -48,235 +62,279 @@ const upload = multer({
  * @desc Upload a new resource file
  * @access Private
  */
-router.post('/', /*authenticate,*/ upload.single('resource'), async (req: Request, res: Response): Promise<void> => {
-  try {
-    if (!req.file) {
-      res.status(400).json({
-        success: false,
-        error: 'No file uploaded'
-      });
-      return;
-    }
-
-    // if (!req.user) {
-    //   res.status(401).json({
-    //     success: false,
-    //     error: 'User authentication required'
-    //   });
-    //   return;
-    // }
-
-    // Extract file information from multer-s3 result
-    const fileKey = (req.file as any).key;
-    const fileLocation = (req.file as any).location;
-    const fileSize = (req.file as any).size;
-    const mimeType = (req.file as any).mimetype;
-
-    // Get metadata from request body
-    const {
-      title,
-      description = '',
-      resourceType = 'other',
-      tags = [],
-      categories = [],
-      isPublic = true,
-    } = req.body;
-
-    if (!title) {
-      res.status(400).json({
-        success: false,
-        error: 'Title is required'
-      });
-      return;
-    }
-
-    // Create resource document in MongoDB
-    const resource = new Resource({
-      title,
-      description,
-      file_path: fileLocation,
-      file_key: fileKey,
-      file_url: fileLocation,
-      file_size: fileSize,
-      mime_type: mimeType,
-      // owner_id: parseInt(req.user.id, 10),
-      owner_id: 0, // TODO: Set to authenticated user ID
-      is_public: isPublic === 'true' || isPublic === true,
-      resourceType,
-      tags: Array.isArray(tags) ? tags : tags.split(',').map((tag: string) => tag.trim()),
-      categories: Array.isArray(categories) ? categories : categories.split(',').map((cat: string) => cat.trim()),
-    });
-
-    await resource.save();
-
-    // Publish event to Kafka for search indexing
-    await publishDocumentCreated(resource);
-
-    res.status(201).json({
-      success: true,
-      data: {
-        id: resource._id,
-        title: resource.title,
-        description: resource.description,
-        fileUrl: resource.file_url,
-        fileSize: resource.file_size,
-        mimeType: resource.mime_type,
-        resourceType: resource.resourceType,
-        isPublic: resource.is_public
+router.post(
+  "/",
+  authenticate, upload.single("file"),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          error: "No file uploaded",
+        });
+        return;
       }
-    });
-  } catch (error: any) {
-    console.error('Error uploading resource:', error);
 
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Server error'
-    });
-  }
-});
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: "User authentication required",
+        });
+        return;
+      }
+
+      // Extract file information from multer-s3 result
+      const fileKey = (req.file as any).key;
+      const fileLocation = (req.file as any).location;
+      const fileSize = (req.file as any).size;
+      const mimeType = (req.file as any).mimetype;
+
+      // Get metadata from request body
+      const {
+        title,
+        description = "",
+        resourceType = "other",
+        tags = [],
+        categories = [],
+        isPublic = true,
+      } = req.body;
+
+      if (!title) {
+        res.status(400).json({
+          success: false,
+          error: "Title is required",
+        });
+        return;
+      }
+
+      // Create resource document in MongoDB
+      const doc = {
+        title,
+        description,
+        content: '',
+        file_path: fileLocation,
+        file_key: fileKey,
+        file_url: fileLocation,
+        file_size: fileSize,
+        mime_type: mimeType,
+        owner_id: parseInt(req.user.id, 10),
+        // owner_id: 0, // TODO: Set to authenticated user ID
+        is_public: isPublic === "true" || isPublic === true,
+        resourceType,
+        tags: Array.isArray(tags)
+          ? tags
+          : tags.split(",").map((tag: string) => tag.trim()),
+        categories: Array.isArray(categories)
+          ? categories
+          : categories.split(",").map((cat: string) => cat.trim()),
+      }
+      const resource = new Resource(doc);
+      await resource.save();
+
+      // const dog = new Document(doc);
+      // await dog.save();
+
+      // Publish event to Kafka for search indexing
+      await publishDocumentCreated(resource);
+
+      // await fetch(`http://10.42.0.184:5000/api/search/documents`, {
+      //   method: "POST",
+      //   headers: {
+      //     "Content-Type": "application/json",
+      //     Authorization: req.headers.authorization || "",
+      //   },
+      //   body: JSON.stringify({
+      //     title: resource.title,
+      //     description: resource.description,
+      //     content: resource.description,
+      //     resourceType: resource.resourceType,
+      //     tags: resource.tags,
+      //     categories: resource.categories,
+      //     owner_id: resource.owner_id,
+      //     is_public: resource.is_public,
+      //     file_url: resource.file_url,
+      //     created_at: resource.created_at,
+      //   }),
+      // }).catch((err) => console.error("Error indexing document:", err));
+
+      res.status(201).json({
+        success: true,
+        data: {
+          id: resource._id,
+          title: resource.title,
+          description: resource.description,
+          fileUrl: resource.file_url,
+          fileSize: resource.file_size,
+          mimeType: resource.mime_type,
+          resourceType: resource.resourceType,
+          isPublic: resource.is_public,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error uploading resource:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Server error",
+      });
+    }
+  },
+);
 
 /**
  * @route GET /api/resources/:id
  * @desc Get resource metadata by ID
  * @access Public (with optional auth for private resources)
  */
-router.get('/:id', optionalAuthenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const resourceId = req.params.id;
+router.get(
+  "/:id",
+  optionalAuthenticate,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const resourceId = req.params.id;
 
-    if (!mongoose.Types.ObjectId.isValid(resourceId)) {
-      res.status(400).json({
-        success: false,
-        error: 'Invalid resource ID format'
-      });
-      return;
-    }
+      if (!mongoose.Types.ObjectId.isValid(resourceId)) {
+        res.status(400).json({
+          success: false,
+          error: "Invalid resource ID format",
+        });
+        return;
+      }
 
-    const resource = await Resource.findById(resourceId);
+      const resource = await Resource.findById(resourceId);
 
-    if (!resource) {
-      res.status(404).json({
-        success: false,
-        error: 'Resource not found'
-      });
-      return;
-    }
+      if (!resource) {
+        res.status(404).json({
+          success: false,
+          error: "Resource not found",
+        });
+        return;
+      }
 
-    // Check access permissions - private resources are only accessible by owner or admin
-    if (!resource.is_public &&
+      // Check access permissions - private resources are only accessible by owner or admin
+      if (
+        !resource.is_public &&
         (!req.user ||
-         (parseInt(req.user.id, 10) !== resource.owner_id &&
-          req.user.role !== 'admin'))) {
-      res.status(403).json({
-        success: false,
-        error: 'Access denied to this resource'
+          (parseInt(req.user.id, 10) !== resource.owner_id &&
+            req.user.role !== "admin"))
+      ) {
+        res.status(403).json({
+          success: false,
+          error: "Access denied to this resource",
+        });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        data: resource,
       });
-      return;
+    } catch (error: any) {
+      console.error("Error fetching resource:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Server error",
+      });
     }
-
-    res.status(200).json({
-      success: true,
-      data: resource
-    });
-  } catch (error: any) {
-    console.error('Error fetching resource:', error);
-
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Server error'
-    });
-  }
-});
+  },
+);
 
 /**
  * @route GET /api/resources
  * @desc Get all resources (with pagination and filtering)
  * @access Public (with filtering based on auth)
  */
-router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const {
-      page = 1,
-      limit = 10,
-      resourceType,
-      tags,
-      categories,
-      owner
-    } = req.query;
+router.get(
+  "/",
+  optionalAuthenticate,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        resourceType,
+        tags,
+        categories,
+        owner,
+      } = req.query;
 
-    const pageNumber = parseInt(page as string, 10);
-    const limitNumber = parseInt(limit as string, 10);
+      const pageNumber = parseInt(page as string, 10);
+      const limitNumber = parseInt(limit as string, 10);
 
-    // Build filter query
-    const query: any = {};
+      // Build filter query
+      const query: any = {};
 
-    // Add resourceType filter if specified
-    if (resourceType) {
-      query.resourceType = resourceType;
-    }
+      // Add resourceType filter if specified
+      if (resourceType) {
+        query.resourceType = resourceType;
+      }
 
-    // Add tags filter if specified (supports comma-separated list)
-    if (tags) {
-      const tagArray = (tags as string).split(',').map(tag => tag.trim());
-      query.tags = { $in: tagArray };
-    }
+      // Add tags filter if specified (supports comma-separated list)
+      if (tags) {
+        const tagArray = (tags as string).split(",").map((tag) => tag.trim());
+        query.tags = { $in: tagArray };
+      }
 
-    // Add categories filter if specified (supports comma-separated list)
-    if (categories) {
-      const categoryArray = (categories as string).split(',').map(cat => cat.trim());
-      query.categories = { $in: categoryArray };
-    }
+      // Add categories filter if specified (supports comma-separated list)
+      if (categories) {
+        const categoryArray = (categories as string)
+          .split(",")
+          .map((cat) => cat.trim());
+        query.categories = { $in: categoryArray };
+      }
 
-    // Add owner filter if specified
-    if (owner) {
-      query.owner_id = parseInt(owner as string, 10);
-    }
+      // Add owner filter if specified
+      if (owner) {
+        query.owner_id = parseInt(owner as string, 10);
+      }
 
-    // Handle privacy - if user is authenticated, include their private resources
-    if (req.user) {
-      // If user is admin, they can see all resources
-      if (req.user.role === 'admin') {
-        // No additional filter
+      // Handle privacy - if user is authenticated, include their private resources
+      if (req.user) {
+        // If user is admin, they can see all resources
+        if (req.user.role === "admin") {
+          // No additional filter
+        } else {
+          // Regular user can see all public resources plus their own private resources
+          query.$or = [
+            { is_public: true },
+            { owner_id: parseInt(req.user.id, 10) },
+          ];
+        }
       } else {
-        // Regular user can see all public resources plus their own private resources
-        query.$or = [
-          { is_public: true },
-          { owner_id: parseInt(req.user.id, 10) }
-        ];
+        // Unauthenticated users can only see public resources
+        query.is_public = true;
       }
-    } else {
-      // Unauthenticated users can only see public resources
-      query.is_public = true;
+
+      // Get total count for pagination
+      const total = await Resource.countDocuments(query);
+
+      // Get resources with pagination
+      const resources = await Resource.find(query)
+        .sort({ created_at: -1 })
+        .skip((pageNumber - 1) * limitNumber)
+        .limit(limitNumber);
+
+      res.status(200).json({
+        success: true,
+        data: resources,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          pages: Math.ceil(total / limitNumber),
+        },
+      });
+    } catch (error: any) {
+      console.error("Error fetching resources:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Server error",
+      });
     }
-
-    // Get total count for pagination
-    const total = await Resource.countDocuments(query);
-
-    // Get resources with pagination
-    const resources = await Resource.find(query)
-      .sort({ created_at: -1 })
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber);
-
-    res.status(200).json({
-      success: true,
-      data: resources,
-      pagination: {
-        total,
-        page: pageNumber,
-        limit: limitNumber,
-        pages: Math.ceil(total / limitNumber)
-      }
-    });
-  } catch (error: any) {
-    console.error('Error fetching resources:', error);
-
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Server error'
-    });
-  }
-});
+  },
+);
 
 /**
  * @route GET /api/resources/download/:id
@@ -328,12 +386,41 @@ router.get('/download/:id', optionalAuthenticate, async (req: Request, res: Resp
       const data = await s3Client.send(getObjectCommand);
 
       if (data.Body) {
+        // Get the original filename from the resource file_key or use a default
+        const originalFilename = resource.file_key.split('/').pop() || 'download';
+
         // Set appropriate headers for file download
-        res.setHeader("Content-Disposition", `attachment; filename="${resource.file_key}"`);
-        res.setHeader("Content-Type", data.ContentType || 'application/octet-stream');
+        // Use attachment disposition to force download
+        res.setHeader("Content-Disposition", `attachment; filename="${originalFilename}"`);
+
+        // Set the proper content type from the resource record or from S3 response
+        res.setHeader("Content-Type", resource.mime_type || data.ContentType || 'application/octet-stream');
+
+        // If the file size is known, set the Content-Length header
+        if (resource.file_size) {
+          res.setHeader("Content-Length", resource.file_size);
+        }
+
+        // Disable any content transformations that might affect binary data
+        res.setHeader("Content-Encoding", "binary");
 
         // Stream the file to the response
-        (data.Body as any).pipe(res);
+        const readableStream = data.Body as any;
+        readableStream.pipe(res);
+
+        // Handle stream errors
+        readableStream.on('error', (err: Error) => {
+          console.error('Stream error:', err);
+          // At this point headers may have been sent, so we can't send a JSON error response
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              error: 'Error streaming file data'
+            });
+          } else {
+            res.end();
+          }
+        });
 
         // Update download count (async, don't wait for it)
         Resource.findByIdAndUpdate(
@@ -475,129 +562,137 @@ router.get('/download/:id', optionalAuthenticate, async (req: Request, res: Resp
  * @desc Delete a resource
  * @access Private (owner or admin)
  */
-router.delete('/:id', /*authenticate,*/ async (req: Request, res: Response): Promise<void> => {
-  try {
-    const resourceId = req.params.id;
-
-    if (!mongoose.Types.ObjectId.isValid(resourceId)) {
-      res.status(400).json({
-        success: false,
-        error: 'Invalid resource ID format'
-      });
-      return;
-    }
-
-    // Find the resource
-    const resource = await Resource.findById(resourceId);
-
-    if (!resource) {
-      res.status(404).json({
-        success: false,
-        error: 'Resource not found'
-      });
-      return;
-    }
-
-    // Check if user has permission to delete (must be owner or admin)
-    if (!req.user ||
-        (parseInt(req.user.id, 10) !== resource.owner_id &&
-         req.user.role !== 'admin')) {
-      res.status(403).json({
-        success: false,
-        error: 'You do not have permission to delete this resource'
-      });
-      return;
-    }
-
-    // Delete from S3
+router.delete(
+  "/:id",
+  /*authenticate,*/ async (req: Request, res: Response): Promise<void> => {
     try {
-      const deleteObjectParams = {
-        Bucket: bucketName,
-        Key: resource.file_key,
-      };
+      const resourceId = req.params.id;
 
-      const deleteCommand = new DeleteObjectCommand(deleteObjectParams);
-      await s3Client.send(deleteCommand);
-    } catch (s3Error) {
-      console.error('Error deleting file from S3:', s3Error);
-      // Continue with MongoDB deletion even if S3 deletion fails
+      if (!mongoose.Types.ObjectId.isValid(resourceId)) {
+        res.status(400).json({
+          success: false,
+          error: "Invalid resource ID format",
+        });
+        return;
+      }
+
+      // Find the resource
+      const resource = await Resource.findById(resourceId);
+
+      if (!resource) {
+        res.status(404).json({
+          success: false,
+          error: "Resource not found",
+        });
+        return;
+      }
+
+      // Check if user has permission to delete (must be owner or admin)
+      if (
+        !req.user ||
+        (parseInt(req.user.id, 10) !== resource.owner_id &&
+          req.user.role !== "admin")
+      ) {
+        res.status(403).json({
+          success: false,
+          error: "You do not have permission to delete this resource",
+        });
+        return;
+      }
+
+      // Delete from S3
+      try {
+        const deleteObjectParams = {
+          Bucket: bucketName,
+          Key: resource.file_key,
+        };
+
+        const deleteCommand = new DeleteObjectCommand(deleteObjectParams);
+        await s3Client.send(deleteCommand);
+      } catch (s3Error) {
+        console.error("Error deleting file from S3:", s3Error);
+        // Continue with MongoDB deletion even if S3 deletion fails
+      }
+
+      // Delete from MongoDB
+      await Resource.findByIdAndDelete(resourceId);
+      // await Document.findByIdAndDelete(resourceId);
+
+      // Publish deletion event to Kafka for search indexing
+      await publishDocumentDeleted(resourceId);
+
+      res.status(200).json({
+        success: true,
+        message: "Resource deleted successfully",
+      });
+    } catch (error: any) {
+      console.error("Error deleting resource:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Server error",
+      });
     }
-
-    // Delete from MongoDB
-    await Resource.findByIdAndDelete(resourceId);
-
-    // Publish deletion event to Kafka for search indexing
-    await publishDocumentDeleted(resourceId);
-
-    res.status(200).json({
-      success: true,
-      message: 'Resource deleted successfully'
-    });
-  } catch (error: any) {
-    console.error('Error deleting resource:', error);
-
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Server error'
-    });
-  }
-});
+  },
+);
 
 /**
  * @route GET /api/resources/user/:userId
  * @desc Get resources by owner ID
  * @access Public (with filtering based on auth)
  */
-router.get('/user/:userId', optionalAuthenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { userId } = req.params;
-    const {
-      page = 1,
-      limit = 10
-    } = req.query;
+router.get(
+  "/user/:userId",
+  optionalAuthenticate,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { userId } = req.params;
+      const { page = 1, limit = 10 } = req.query;
 
-    const pageNumber = parseInt(page as string, 10);
-    const limitNumber = parseInt(limit as string, 10);
-    const ownerId = parseInt(userId, 10);
+      const pageNumber = parseInt(page as string, 10);
+      const limitNumber = parseInt(limit as string, 10);
+      const ownerId = parseInt(userId, 10);
 
-    // Build filter query
-    const query: any = { owner_id: ownerId };
+      // Build filter query
+      const query: any = { owner_id: ownerId };
 
-    // Handle privacy - if user is authenticated and is the owner or admin, they can see all resources
-    // Otherwise, they can only see public resources from this user
-    if (!req.user ||
-        (parseInt(req.user.id, 10) !== ownerId &&
-         req.user.role !== 'admin')) {
-      query.is_public = true;
-    }
-
-    // Get total count for pagination
-    const total = await Resource.countDocuments(query);
-
-    // Get resources with pagination
-    const resources = await Resource.find(query)
-      .sort({ created_at: -1 })
-      .skip((pageNumber - 1) * limitNumber)
-      .limit(limitNumber);
-
-    res.status(200).json({
-      success: true,
-      data: resources,
-      pagination: {
-        total,
-        page: pageNumber,
-        limit: limitNumber,
-        pages: Math.ceil(total / limitNumber)
+      // Handle privacy - if user is authenticated and is the owner or admin, they can see all resources
+      // Otherwise, they can only see public resources from this user
+      if (
+        !req.user ||
+        (parseInt(req.user.id, 10) !== ownerId && req.user.role !== "admin")
+      ) {
+        query.is_public = true;
       }
-    });
-  } catch (error: any) {
-    console.error('Error fetching user resources:', error);
 
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Server error'
-    });
-  }
-});
+      // Get total count for pagination
+      const total = await Resource.countDocuments(query);
+
+      // Get resources with pagination
+      const resources = await Resource.find(query)
+        .sort({ created_at: -1 })
+        .skip((pageNumber - 1) * limitNumber)
+        .limit(limitNumber);
+
+      res.status(200).json({
+        success: true,
+        data: resources,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          pages: Math.ceil(total / limitNumber),
+        },
+      });
+    } catch (error: any) {
+      console.error("Error fetching user resources:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Server error",
+      });
+    }
+  },
+);
 
 export default router;

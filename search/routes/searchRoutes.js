@@ -11,9 +11,9 @@ router.get('/suggestions', optionalAuthenticate, searchController.getSearchSugge
 router.get('/advanced', optionalAuthenticate, searchController.advancedSearch);
 
 // Private routes (require authentication)
-router.post('/documents', authenticate, searchController.indexDocument);
-router.put('/documents/:id', authenticate, searchController.updateDocument);
-router.delete('/documents/:id', authenticate, searchController.deleteDocument);
+// router.post('/documents', authenticate, searchController.indexDocument);
+// router.put('/documents/:id', authenticate, searchController.updateDocument);
+// router.delete('/documents/:id', authenticate, searchController.deleteDocument);
 
 // Admin routes
 router.post('/sync', authorizeAdmin, searchController.syncIndex);

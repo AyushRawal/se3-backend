@@ -15,7 +15,7 @@ dotenv.config();
 // Initialize Express app
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const SERVICE_NAME = process.env.SERVICE_NAME || 'resource-service';
+const SERVICE_NAME = 'resource-service';
 
 // Connect to MongoDB for document metadata storage
 const connectMongoDB = async () => {

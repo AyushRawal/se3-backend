@@ -46,50 +46,6 @@ const apiLimiter = rateLimit({
   },
 });
 app.use(apiLimiter);
-app.use(verifyToken);
-
-// ——— RAW‐BODY PROXIES (login/register) ———————————————————————————————
-
-app.use(
-  "/api/auth/login",
-  createDynamicProxy("auth-service", { "^/api/auth/login": "/api/auth/login" })
-);
-app.use(
-  "/api/auth/verify-token",
-  createDynamicProxy("auth-service", { "^/api/auth/verify-token": "/api/auth/verify-token" })
-);
-app.use(
-  "/api/auth/profile",
-  createDynamicProxy("auth-service", { "^/api/auth/profile": "/api/auth/profile" })
-);
-app.use(
-  "/api/auth/register",
-  createDynamicProxy("auth-service", { "^/api/auth/register": "/api/auth/register" })
-);
-app.use(
-  "/api/search",
-  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
-);
-app.use(
-  "/api/search/suggestions",
-  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
-);
-app.use(
-  "/api/search/advanced",
-  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
-);
-app.use(
-  "/api/search/documents",
-  createDynamicProxy("search-service", { "^/api/search/documents": "/api/search/documents" })
-);
-app.use(
-  "/api/search/sync",
-  createDynamicProxy("search-service", { "^/api/search/sync": "/api/search/sync" })
-);
-// ——— BODY PARSERS —————————————————————————————————————————————————————
-
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
 
 // ——— JWT VERIFICATION ——————————————————————————————————————————————
 
@@ -113,6 +69,66 @@ const verifyToken = (req, res, next) => {
   }
   next();
 };
+
+// app.use(verifyToken);
+
+// ——— RAW‐BODY PROXIES (login/register) ———————————————————————————————
+
+app.use(
+  "/api/auth/login",
+  createDynamicProxy("auth-service", { "^/api/auth/login": "/api/auth/login" })
+);
+app.use(
+  "/api/auth/verify-token",
+  createDynamicProxy("auth-service", { "^/api/auth/verify-token": "/api/auth/verify-token" })
+);
+app.use(
+  "/api/auth/profile",
+  verifyToken,
+  createDynamicProxy("auth-service", { "^/api/auth/profile": "/api/auth/profile" })
+);
+app.use(
+  "/api/auth/register",
+  createDynamicProxy("auth-service", { "^/api/auth/register": "/api/auth/register" })
+);
+app.use(
+  "/api/search",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/suggestions",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/advanced",
+  createDynamicProxy("search-service", { "^/api/search": "/api/search" })
+);
+app.use(
+  "/api/search/documents",
+  verifyToken,
+  createDynamicProxy("search-service", { "^/api/search/documents": "/api/search/documents" })
+);
+app.use(
+  "/api/search/sync",
+  createDynamicProxy("search-service", { "^/api/search/sync": "/api/search/sync" })
+);
+app.use(
+  "/api/resources/",
+  verifyToken,
+  createDynamicProxy("resource-service", { "^/api/resources": "/api/resources" })
+);
+app.use(
+  "/api/resources/download",
+  createDynamicProxy("resource-service", { "^/api/resources/download": "/api/resources/download" })
+);
+app.use(
+  "/api/resources/users",
+  createDynamicProxy("resource-service", { "^/api/resources/users": "/api/resources/users" })
+);
+// ——— BODY PARSERS —————————————————————————————————————————————————————
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // ——— DISCOVERY & CIRCUIT BREAKER HELPERS ——————————————————————————————————
 
@@ -263,14 +279,6 @@ function createDynamicProxy(serviceName) {
   };
 }
 
-
-// ——— JWT‐guarded & search routes ———————————————————————————————————————
-
-
-app.use(
-  "/api/search",
-  createDynamicProxy("search-service", { "^/api/search": "" })
-);
 
 // ——— DIAGNOSTIC ENDPOINT ——————————————————————————————————————————————
 
